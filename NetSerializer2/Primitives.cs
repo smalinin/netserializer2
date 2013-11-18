@@ -486,13 +486,19 @@ namespace NetSerializer2
 		public static void WritePrimitive(Serializer serializer, Stream stream, decimal value, ObjectList objList)
 		{
 			int[] v = Decimal.GetBits(value);
-			WritePrimitive(serializer, stream, v, null);
+			WritePrimitive(serializer, stream, v[0], null);
+			WritePrimitive(serializer, stream, v[1], null);
+			WritePrimitive(serializer, stream, v[2], null);
+			WritePrimitive(serializer, stream, v[3], null);
 		}
 
 		public static void ReadPrimitive(Serializer serializer, Stream stream, out decimal value, ObjectList objList)
 		{
-			int[] v;
-			ReadPrimitive(serializer, stream, out v, null);
+			var v = new int[4];
+			ReadPrimitive(serializer, stream, out v[0], null);
+			ReadPrimitive(serializer, stream, out v[1], null);
+			ReadPrimitive(serializer, stream, out v[2], null);
+			ReadPrimitive(serializer, stream, out v[3], null);
 			value = new Decimal(v);
 		}
 
@@ -612,7 +618,7 @@ namespace NetSerializer2
 			value = new Nullable<TValue>(v);
 		}
 
-
+//??????????????????????????????????????
 		public static void WritePrimitive<TValue>(Serializer serializer, Stream stream, List<TValue> value, ObjectList objList)
 		{
 			if (value == null)
@@ -1472,6 +1478,50 @@ namespace NetSerializer2
 			if (objList != null)
 				objList.Add(value);
 		}
+
+
+		/**
+				public static void WritePrimitive<TValue>(Serializer serializer, Stream stream, CopyOnWriteArrayList<TValue> value, ObjectList objList)
+				{
+					if (value == null)
+					{
+						WritePrimitive(serializer, stream, (uint)0, objList);
+						return;
+					}
+					if (objList != null)
+						objList.Add(value);
+
+					int count = value.Count;
+					WritePrimitive(serializer, stream, (uint)count + 1, objList);
+
+					foreach (var kvp in value)
+						NetSerializer2.Serializer.Serialize(stream, kvp, objList);
+				}
+
+				public static void ReadPrimitive<TValue>(Serializer serializer, Stream stream, out CopyOnWriteArrayList<TValue> value, ObjectList objList)
+				{
+					uint len;
+					ReadPrimitive(serializer, stream, out len, objList);
+
+					if (len == 0)
+					{
+						value = null;
+						return;
+					}
+
+					len--;
+
+					var arr = new TValue[len];
+					for (int i = 0; i < len; i++)
+						arr[i] = (TValue)NetSerializer2.Serializer.Deserialize(stream, objList);
+	
+					value = new CopyOnWriteArrayList<TValue>(arr);
+					if (objList != null)
+						objList.Add(value);
+				}
+		***/
+
+
 
 
 

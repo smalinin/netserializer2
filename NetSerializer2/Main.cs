@@ -21,6 +21,7 @@
  *
  */
 
+
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -45,7 +46,7 @@ namespace NetSerializer2
 			{
 				predefinedID = new Dictionary<Type, uint>();
 				// TypeID 0 is reserved for null
-				predefinedID.Add(typeof(NetSerializer2.ObjectRef), 1);
+				predefinedID.Add(typeof(ObjectRef), 1);
 
 				predefinedID.Add(typeof(ClassFieldInfo), 2);
 				predefinedID.Add(typeof(ClassInfo), 3);
@@ -114,6 +115,7 @@ namespace NetSerializer2
 				predefinedID.Add(typeof(Queue), 60);
 				predefinedID.Add(typeof(Stack), 61);
 				predefinedID.Add(typeof(SortedList), 62);
+
 			}
 		}
 
@@ -214,22 +216,84 @@ namespace NetSerializer2
 				return (SerializationInvokeHandler)dynamicMethod.CreateDelegate(typeof(SerializationInvokeHandler));
 		}
 
+		// Global TypeData cache 
 		private static ConcurrentDictionary<Type, TypeData> g_type_TypeData = new ConcurrentDictionary<Type, TypeData>();
-//--		private static ReaderWriterLockSlim glck = new ReaderWriterLockSlim();
 		private SimpleRwLock m_lck;
 
-		private Dictionary<uint, TypeData> m_typeID_TypeData;
-		private Dictionary<Type, TypeData> m_type_TypeData = new Dictionary<Type, TypeData>();
+		private List<TypeData>  m_registredTypeData = new List<TypeData>(128); 
+		private Dictionary<uint, TypeData> m_typeID_TypeData = new Dictionary<uint, TypeData>(128);
+		private Dictionary<Type, TypeData> m_type_TypeData = new Dictionary<Type, TypeData>(128);
 		private uint typeID = SerializationID.typeIDstart;
 		private bool s_initialized;
 
+		private bool m_autoRegister = false;
+		private bool m_autoAssignObjID = false;
 
-		public void InitializeFrom(Stream ins)
+		public Serializer SetAutoRegister(bool val)
+		{
+			m_autoRegister = val;
+			if (val) // autoRegister required autoAssignObjID
+				m_autoAssignObjID = true;
+			return this;
+		}
+
+		public Serializer SetAutoAssignObjID(bool val)
+		{
+			m_autoAssignObjID = val;
+			return this;
+		}
+
+		public bool AutoRegister
+		{
+			get { return m_autoRegister; }
+			set
+			{
+				m_autoRegister = value;
+				if (value) // autoRegister required autoAssignObjID
+					m_autoAssignObjID = true;
+			}
+		}
+
+		public bool AutoAssignObjID
+		{
+			get { return m_autoAssignObjID; }
+			set
+			{
+				if (m_autoRegister && !value)
+					throw new InvalidOperationException("NetSerializer2 could not set AutoAssignObjID to false, if AutoRegister==true .");
+				m_autoAssignObjID = value;
+			}
+		}
+
+		public Serializer Initialize(Type[] rootTypes)
 		{
 			if (s_initialized)
 				throw new InvalidOperationException("NetSerializer2 already initialized");
 
-			Initialize(null);
+			var types = CollectTypes(rootTypes);
+
+#if GENERATE_DEBUGGING_ASSEMBLY
+			GenerateAssembly(types, null);
+#endif
+			var map_Type2TypeData = GenerateDynamic(types, null);
+			foreach (var kv in map_Type2TypeData)
+			{
+				m_type_TypeData.Add(kv.Key, kv.Value);
+				m_typeID_TypeData.Add(kv.Value.TypeID, kv.Value);
+				if (kv.Value.TypeID >= SerializationID.typeIDstart)
+					m_registredTypeData.Add(kv.Value);
+			}
+
+			s_initialized = true;
+			return this;
+		}
+
+		public Serializer Initialize(Stream ins)
+		{
+			if (s_initialized)
+				throw new InvalidOperationException("NetSerializer2 already initialized");
+
+			Initialize((Type[])null);
 
 			var ver = (uint) Deserialize(ins);
 			var lastTypeID = (uint) Deserialize(ins);
@@ -274,8 +338,17 @@ namespace NetSerializer2
 #if GENERATE_DEBUGGING_ASSEMBLY
 			GenerateAssembly(types, map_Type_ID);
 #endif
-			m_type_TypeData = GenerateDynamic(types, map_Type_ID);
-			m_typeID_TypeData = m_type_TypeData.ToDictionary(kvp => kvp.Value.TypeID, kvp => kvp.Value);
+			var map_Type2TypeData = GenerateDynamic(types, map_Type_ID);
+			foreach (var kv in map_Type2TypeData)
+			{
+				m_type_TypeData.Add(kv.Key, kv.Value);
+				m_typeID_TypeData.Add(kv.Value.TypeID, kv.Value);
+				if (kv.Value.TypeID >= SerializationID.typeIDstart)
+					m_registredTypeData.Add(kv.Value);
+			}
+			m_registredTypeData.AddRange(listTypeData);
+
+			return this;
 		}
 
 		public void SaveState(Stream outs)
@@ -285,20 +358,19 @@ namespace NetSerializer2
 			uint ver = 0;
 
 #if NEW_LCK
-			m_lck.EnterWriteLock();
+			m_lck.EnterReadLock();
 			try
 #else
 			lock (this)
 #endif
 			{
 				lastTypeID = typeID;
-				listTypeData =
-					m_typeID_TypeData.Select(v => v.Value).Where(v => v.TypeID >= SerializationID.typeIDstart).ToList<TypeData>();
+				listTypeData = m_registredTypeData.ToList<TypeData>();
 			}
 #if NEW_LCK
 			finally
 			{
-				m_lck.ExitWriteLock();
+				m_lck.ExitReadLock();
 			}
 #endif
 			Serialize(outs, ver);
@@ -306,33 +378,15 @@ namespace NetSerializer2
 			Serialize(outs, listTypeData);
 		}
 
-		public void Initialize(Type[] rootTypes)
-		{
-			if (s_initialized)
-				throw new InvalidOperationException("NetSerializer2 already initialized");
-
-			var types = CollectTypes(rootTypes);
-
-#if GENERATE_DEBUGGING_ASSEMBLY
-			GenerateAssembly(types, null);
-#endif
-			m_type_TypeData = GenerateDynamic(types, null);
-			m_typeID_TypeData = m_type_TypeData.ToDictionary(kvp => kvp.Value.TypeID, kvp => kvp.Value);
-
-			s_initialized = true;
-		}
-
 		public void Register(Type[] regTypes)
 		{
 			if (!s_initialized)
 				throw new InvalidOperationException("NetSerializer2 not initialized");
+			if (!m_autoAssignObjID)
+				throw new InvalidOperationException("NetSerializer2 couldn't generate ID for new objects with disabled AutoAssignObjID");
 
 			var ctypes = CollectTypes(regTypes);
 			var types = ctypes.Select(v => v).Where(v => !m_type_TypeData.ContainsKey(v)).ToArray<Type>();
-
-#if GENERATE_DEBUGGING_ASSEMBLY
-			GenerateAssembly(types, null);
-#endif
 
 #if NEW_LCK
 			m_lck.EnterWriteLock();
@@ -341,8 +395,14 @@ namespace NetSerializer2
 			lock (this)
 #endif
 			{
-				m_type_TypeData = GenerateDynamic(types, null);
-				m_typeID_TypeData = m_type_TypeData.ToDictionary(kvp => kvp.Value.TypeID, kvp => kvp.Value);
+				var map_Type2TypeData = GenerateDynamic(types, null);
+				foreach (var kv in map_Type2TypeData)
+				{
+					m_type_TypeData.Add(kv.Key, kv.Value);
+					m_typeID_TypeData.Add(kv.Value.TypeID, kv.Value);
+					if (kv.Value.TypeID >= SerializationID.typeIDstart)
+						m_registredTypeData.Add(kv.Value);
+				}
 			}
 #if NEW_LCK
 			finally
@@ -350,6 +410,52 @@ namespace NetSerializer2
 				m_lck.ExitWriteLock();
 			}
 #endif
+		}
+
+		public int Register(Type regType, uint[] typeID)
+		{
+			if (!s_initialized)
+				throw new InvalidOperationException("NetSerializer2 not initialized");
+
+			if (!m_autoAssignObjID && typeID==null)
+				throw new InvalidOperationException("NetSerializer2 couldn't generate ID for new objects with disabled AutoAssignObjID");
+ 
+			var ctypes = CollectTypes(new Type[]{regType});
+			var types = ctypes.Select(v => v).Where(v => !m_type_TypeData.ContainsKey(v)).ToArray<Type>();
+
+			Dictionary<Type, uint> map_Type2id = null;
+			if (!m_autoAssignObjID)
+			{
+				if (types.Length > typeID.Length)
+					throw new InvalidOperationException("NetSerializer2: Type=" + regType.Name + " requires " + types.Length + " ID, but was received only " + typeID.Length);
+				map_Type2id = new Dictionary<Type, uint>();
+				int i = 0;
+				foreach (var type in types)
+					map_Type2id.Add(type, typeID[i++]);
+			} 
+#if NEW_LCK
+			m_lck.EnterWriteLock();
+			try
+#else
+			lock (this)
+#endif
+			{
+				var map_Type2TypeData = GenerateDynamic(types, map_Type2id);
+				foreach (var kv in map_Type2TypeData)
+				{
+					m_type_TypeData.Add(kv.Key, kv.Value);
+					m_typeID_TypeData.Add(kv.Value.TypeID, kv.Value);
+					if (kv.Value.TypeID >= SerializationID.typeIDstart)
+						m_registredTypeData.Add(kv.Value);
+				}
+			}
+#if NEW_LCK
+			finally
+			{
+				m_lck.ExitWriteLock();
+			}
+#endif
+			return types.Length;
 		}
 
 		public void SerializeDeep(Stream stream, object data)
@@ -580,7 +686,6 @@ namespace NetSerializer2
 		Dictionary<Type, TypeData> GenerateDynamic(Type[] types, Dictionary<Type, uint> loaded_TypeMap)
 		{
 			Dictionary<Type, TypeData> _map = GenerateTypeData(types, loaded_TypeMap); //new types
-			Dictionary<Type, TypeData> map = m_type_TypeData.Concat(_map).ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
 
 			/* generate stubs */
 			foreach (var kv in _map.Where(kv => !kv.Value.IsInitialized).Where(kv => kv.Value.IsDynamic))
@@ -594,7 +699,7 @@ namespace NetSerializer2
 				kv.Value.ReaderILGen = d_dm.GetILGenerator();
 			}
 
-			var ctx = new CodeGenContext(map);
+			var ctx = new CodeGenContext(m_type_TypeData.Concat(_map).ToDictionary(kvp => kvp.Key, kvp => kvp.Value));
 
 			/* generate bodies */
 			foreach (var kv in _map.Where(kv => !kv.Value.IsInitialized).Where(kv => kv.Value.IsDynamic))
@@ -627,7 +732,7 @@ namespace NetSerializer2
 				g_type_TypeData.GetOrAdd(kv.Key, kv.Value);
 			}
 
-			return map;
+			return _map;
 		}
 
 #if GENERATE_DEBUGGING_ASSEMBLY
@@ -696,22 +801,69 @@ namespace NetSerializer2
 			else
 			{
 				TypeData typeData;
+
 #if NEW_LCK
+				var vType = value.GetType();
+				bool found;
 				serializer.m_lck.EnterReadLock();
-				try
-#else
-				lock (serializer)
-#endif
-				{
-					if (!serializer.m_type_TypeData.TryGetValue(value.GetType(), out typeData))
-						throw new InvalidOperationException(String.Format("Unknown type = {0}", value.GetType().FullName));
+				try {
+					found = serializer.m_type_TypeData.TryGetValue(vType, out typeData);
 				}
-#if NEW_LCK
-				finally
-				{
+				finally{
 					serializer.m_lck.ExitReadLock();
 				}
+
+	            if (!found)
+	            {
+					if (!serializer.m_autoRegister)
+						throw new InvalidOperationException(String.Format("Unknown type = {0}", value.GetType().FullName));
+
+					var ctypes = serializer.CollectTypes(new[] { vType });
+
+					serializer.m_lck.EnterWriteLock();
+					try
+					{
+						var types = ctypes.Select(v => v).Where(v => !serializer.m_type_TypeData.ContainsKey(v)).ToArray<Type>();
+						var map_Type2TypeData = serializer.GenerateDynamic(types, null);
+						foreach (var kv in map_Type2TypeData)
+						{
+							serializer.m_type_TypeData.Add(kv.Key, kv.Value);
+							serializer.m_typeID_TypeData.Add(kv.Value.TypeID, kv.Value);
+							if (kv.Value.TypeID >= SerializationID.typeIDstart)
+								serializer.m_registredTypeData.Add(kv.Value);
+						}
+					}
+					finally
+					{
+						serializer.m_lck.ExitWriteLock();
+					}
+	            }
+#else
+				lock (serializer)
+				{
+					var v_type = value.GetType();
+					if (!serializer.m_type_TypeData.TryGetValue(v_type, out typeData))
+					{
+						if (!serializer.m_autoRegister)
+							throw new InvalidOperationException(String.Format("Unknown type = {0}", value.GetType().FullName));
+						else
+						{
+							var ctypes = serializer.CollectTypes(new Type[]{v_type});
+							var types = ctypes.Select(v => v).Where(v => !serializer.m_type_TypeData.ContainsKey(v)).ToArray<Type>();
+
+							var map_Type2TypeData = serializer.GenerateDynamic(types, null);
+							foreach (var kv in map_Type2TypeData)
+							{
+								serializer.m_type_TypeData.Add(kv.Key, kv.Value);
+								serializer.m_typeID_TypeData.Add(kv.Value.TypeID, kv.Value);
+								if (kv.Value.TypeID >= SerializationID.typeIDstart)
+									serializer.m_registredTypeData.Add(kv.Value);
+							}
+						}
+					}
+				}
 #endif
+
 				Primitives.WritePrimitive(serializer, stream, typeData.TypeID, objList);
 				typeData.serializer(serializer, stream, value, objList);
 			}
