@@ -265,6 +265,12 @@ namespace NetSerializer2
 			}
 		}
 
+		public Serializer Initialize()
+		{
+			Initialize((Type[])null);
+			return this;
+		}
+
 		public Serializer Initialize(Type[] rootTypes)
 		{
 			if (s_initialized)
