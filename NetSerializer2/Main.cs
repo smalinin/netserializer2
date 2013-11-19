@@ -838,6 +838,8 @@ namespace NetSerializer2
 							if (kv.Value.TypeID >= SerializationID.typeIDstart)
 								serializer.m_registredTypeData.Add(kv.Value);
 						}
+						if (!map_Type2TypeData.TryGetValue(vType, out typeData))
+							throw new InvalidOperationException(String.Format("Could not AutoRegister type = {0}", value.GetType().FullName));
 					}
 					finally
 					{
@@ -865,6 +867,8 @@ namespace NetSerializer2
 								if (kv.Value.TypeID >= SerializationID.typeIDstart)
 									serializer.m_registredTypeData.Add(kv.Value);
 							}
+							if (!map_Type2TypeData.TryGetValue(vType, out typeData))
+								throw new InvalidOperationException(String.Format("Could not AutoRegister type = {0}", value.GetType().FullName));
 						}
 					}
 				}
