@@ -35,6 +35,9 @@ using System.Diagnostics;
 
 namespace NetSerializer2
 {
+	public delegate void OnRegisteredNewClasses(Serializer sender);
+
+
 	public partial class Serializer
 	{
 		class SerializationID
@@ -215,6 +218,9 @@ namespace NetSerializer2
 			else
 				return (SerializationInvokeHandler)dynamicMethod.CreateDelegate(typeof(SerializationInvokeHandler));
 		}
+
+
+		public event OnRegisteredNewClasses RegistredNewClassesEventHandler;
 
 		// Global TypeData cache 
 		private static ConcurrentDictionary<Type, TypeData> g_type_TypeData = new ConcurrentDictionary<Type, TypeData>();
@@ -416,6 +422,7 @@ namespace NetSerializer2
 				m_lck.ExitWriteLock();
 			}
 #endif
+			CallOnRegistredNewClasses();
 		}
 
 		public int Register(Type regType, uint[] typeID)
@@ -461,6 +468,7 @@ namespace NetSerializer2
 				m_lck.ExitWriteLock();
 			}
 #endif
+			CallOnRegistredNewClasses();
 			return types.Length;
 		}
 
@@ -522,6 +530,12 @@ namespace NetSerializer2
 		static void D(ILGenerator ilGen, string fmt, params object[] args)
 		{
 			//ilGen.EmitWriteLine("E: " + String.Format(fmt, args));
+		}
+
+		protected virtual void CallOnRegistredNewClasses()
+		{
+			OnRegisteredNewClasses handler = RegistredNewClassesEventHandler;
+			if (handler != null) handler(this);
 		}
 
 		void CollectTypes(Type type, HashSet<Type> typeSet)
@@ -807,7 +821,7 @@ namespace NetSerializer2
 			else
 			{
 				TypeData typeData;
-
+				bool isNewClassRegistred = false;
 #if NEW_LCK
 				var vType = value.GetType();
 				bool found;
@@ -840,6 +854,7 @@ namespace NetSerializer2
 						}
 						if (!map_Type2TypeData.TryGetValue(vType, out typeData))
 							throw new InvalidOperationException(String.Format("Could not AutoRegister type = {0}", value.GetType().FullName));
+						isNewClassRegistred = true;
 					}
 					finally
 					{
@@ -869,6 +884,7 @@ namespace NetSerializer2
 							}
 							if (!map_Type2TypeData.TryGetValue(vType, out typeData))
 								throw new InvalidOperationException(String.Format("Could not AutoRegister type = {0}", value.GetType().FullName));
+							isNewClassRegistred = true;
 						}
 					}
 				}
@@ -876,6 +892,8 @@ namespace NetSerializer2
 
 				Primitives.WritePrimitive(serializer, stream, typeData.TypeID, objList);
 				typeData.serializer(serializer, stream, value, objList);
+				if (isNewClassRegistred)
+					serializer.CallOnRegistredNewClasses();
 			}
 
 		}
