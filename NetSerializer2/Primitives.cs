@@ -286,7 +286,7 @@ namespace NetSerializer2
 		public static void ReadPrimitive(Serializer serializer, Stream stream, out double value, ObjectList objList)
 		{
 			ulong v = ReadVarint64(stream);
-			value = BitConverter.Int64BitsToDouble((long)v);
+			value = BitConverter.Int64BitsToDouble(v);
 		}
 #endif
 

@@ -31,6 +31,7 @@ using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Diagnostics;
+using System.Threading;
 
 
 namespace NetSerializer2
@@ -219,12 +220,14 @@ namespace NetSerializer2
 				return (SerializationInvokeHandler)dynamicMethod.CreateDelegate(typeof(SerializationInvokeHandler));
 		}
 
-
+	
 		public event OnRegisteredNewClasses RegistredNewClassesEventHandler;
 
 		// Global TypeData cache 
 		private static ConcurrentDictionary<Type, TypeData> g_type_TypeData = new ConcurrentDictionary<Type, TypeData>();
-		private SimpleRwLock m_lck;
+#if !USE_FULL_LCK
+		private ReaderWriterLockSlim m_lck = new ReaderWriterLockSlim();
+#endif
 
 		private List<TypeData>  m_registredTypeData = new List<TypeData>(128); 
 		private Dictionary<uint, TypeData> m_typeID_TypeData = new Dictionary<uint, TypeData>(128);
@@ -234,6 +237,8 @@ namespace NetSerializer2
 
 		private bool m_autoRegister = false;
 		private bool m_autoAssignObjID = false;
+
+		public bool WasChanged { get; private set; }
 
 		public Serializer SetAutoRegister(bool val)
 		{
@@ -369,7 +374,7 @@ namespace NetSerializer2
 			uint lastTypeID = 0;
 			uint ver = 0;
 
-#if NEW_LCK
+#if !USE_FULL_LCK
 			m_lck.EnterReadLock();
 			try
 #else
@@ -378,8 +383,9 @@ namespace NetSerializer2
 			{
 				lastTypeID = typeID;
 				listTypeData = m_registredTypeData.ToList<TypeData>();
+				WasChanged = false;
 			}
-#if NEW_LCK
+#if !USE_FULL_LCK
 			finally
 			{
 				m_lck.ExitReadLock();
@@ -400,7 +406,10 @@ namespace NetSerializer2
 			var ctypes = CollectTypes(regTypes);
 			var types = ctypes.Select(v => v).Where(v => !m_type_TypeData.ContainsKey(v)).ToArray<Type>();
 
-#if NEW_LCK
+//#if GENERATE_DEBUGGING_ASSEMBLY
+//			GenerateAssembly(types, null);
+//#endif
+#if !USE_FULL_LCK
 			m_lck.EnterWriteLock();
 			try
 #else
@@ -415,8 +424,9 @@ namespace NetSerializer2
 					if (kv.Value.TypeID >= SerializationID.typeIDstart)
 						m_registredTypeData.Add(kv.Value);
 				}
+				WasChanged = true;
 			}
-#if NEW_LCK
+#if !USE_FULL_LCK
 			finally
 			{
 				m_lck.ExitWriteLock();
@@ -445,8 +455,8 @@ namespace NetSerializer2
 				int i = 0;
 				foreach (var type in types)
 					map_Type2id.Add(type, typeID[i++]);
-			} 
-#if NEW_LCK
+			}
+#if !USE_FULL_LCK
 			m_lck.EnterWriteLock();
 			try
 #else
@@ -461,8 +471,9 @@ namespace NetSerializer2
 					if (kv.Value.TypeID >= SerializationID.typeIDstart)
 						m_registredTypeData.Add(kv.Value);
 				}
+				WasChanged = true;
 			}
-#if NEW_LCK
+#if !USE_FULL_LCK
 			finally
 			{
 				m_lck.ExitWriteLock();
@@ -706,6 +717,7 @@ namespace NetSerializer2
 		Dictionary<Type, TypeData> GenerateDynamic(Type[] types, Dictionary<Type, uint> loaded_TypeMap)
 		{
 			Dictionary<Type, TypeData> _map = GenerateTypeData(types, loaded_TypeMap); //new types
+//			Dictionary<Type, TypeData> map = m_type_TypeData.Concat(_map).ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
 
 			/* generate stubs */
 			foreach (var kv in _map.Where(kv => !kv.Value.IsInitialized).Where(kv => kv.Value.IsDynamic))
@@ -822,7 +834,7 @@ namespace NetSerializer2
 			{
 				TypeData typeData;
 				bool isNewClassRegistred = false;
-#if NEW_LCK
+#if !USE_FULL_LCK
 				var vType = value.GetType();
 				bool found;
 				serializer.m_lck.EnterReadLock();
@@ -855,6 +867,7 @@ namespace NetSerializer2
 						if (!map_Type2TypeData.TryGetValue(vType, out typeData))
 							throw new InvalidOperationException(String.Format("Could not AutoRegister type = {0}", value.GetType().FullName));
 						isNewClassRegistred = true;
+						serializer.WasChanged = true;
 					}
 					finally
 					{
@@ -885,6 +898,7 @@ namespace NetSerializer2
 							if (!map_Type2TypeData.TryGetValue(vType, out typeData))
 								throw new InvalidOperationException(String.Format("Could not AutoRegister type = {0}", value.GetType().FullName));
 							isNewClassRegistred = true;
+							serializer.WasChanged = true;
 						}
 					}
 				}
@@ -922,7 +936,7 @@ namespace NetSerializer2
 			else
 			{
 				TypeData typeData;
-#if NEW_LCK
+#if !USE_FULL_LCK
 				serializer.m_lck.EnterReadLock();
 				try
 #else
@@ -932,7 +946,7 @@ namespace NetSerializer2
 					if (!serializer.m_typeID_TypeData.TryGetValue(num, out typeData))
 						throw new InvalidOperationException(String.Format("Unknown typeId = {0}", num));
 				}
-#if NEW_LCK
+#if !USE_FULL_LCK
 				finally
 				{
 					serializer.m_lck.ExitReadLock();
