@@ -64,6 +64,7 @@ namespace NetSerializer2
 
 		public void CopyFrom(TypeData td)
 		{
+			this.TypeInfo = td.TypeInfo;
 			this.IsDynamic = td.IsDynamic;
 			this.IsInitialized = td.IsInitialized;
 			this.WriterMethodInfo = td.WriterMethodInfo;

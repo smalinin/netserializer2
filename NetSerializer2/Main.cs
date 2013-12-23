@@ -345,7 +345,7 @@ namespace NetSerializer2
 						throw new IOException(String.Format("Type:'{0}'. Type for Fieled:'{1}' was changed. Old:'{2}' New:'{3}'", t_type.FullName, cur_f.Name, l_fld.TypeName, Helpers.GetTypeName(cur_f.FieldType)));
 					i++;
 				}
-				if (i != t_typeInfo.Fields.Count)
+				if (t_typeInfo.Fields!=null && i != t_typeInfo.Fields.Count)
 					throw new IOException(String.Format("The Count of fields for stored and current Type: '{0}' aren't equal. Old:'{1}' New:'{2}'", t_type.Name, t_typeInfo.Fields.Count, i));
 			}
 
